@@ -1,3 +1,7 @@
+# Copyright (C) 2026 oleko
+# Это свободное ПО под лицензией GNU GPL v3 или новее — см. LICENSE.
+# Распространяется без каких-либо гарантий.
+
 """plan.json: инвентарь всего архива VK и фиксированный порядок выгрузки на YouTube."""
 from __future__ import annotations
 

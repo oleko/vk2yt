@@ -1,3 +1,7 @@
+# Copyright (C) 2026 oleko
+# Это свободное ПО под лицензией GNU GPL v3 или новее — см. LICENSE.
+# Распространяется без каких-либо гарантий.
+
 """Забор архива видео из VK (video.get) и скачивание роликов через yt-dlp."""
 from __future__ import annotations
 

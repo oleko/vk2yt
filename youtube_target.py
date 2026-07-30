@@ -1,3 +1,7 @@
+# Copyright (C) 2026 oleko
+# Это свободное ПО под лицензией GNU GPL v3 или новее — см. LICENSE.
+# Распространяется без каких-либо гарантий.
+
 """Заливка на YouTube: веб-OAuth (Flow) + resumable upload."""
 from __future__ import annotations
 
