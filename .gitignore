@@ -1,0 +1,41 @@
+# --- Секреты: НИКОГДА не коммитить ---
+# (комментарии только на отдельной строке: git не понимает их в конце строки)
+
+# токен VK, пароли, ключ дашборда
+.env
+# OAuth-клиент Google
+client_secret.json
+client_secret_*.json
+# refresh-токен YouTube
+token.json
+# кэш токена RuTube
+rutube_token.json
+*.pem
+*.key
+
+# --- Личные данные конкретной установки ---
+# инвентарь архива вашего сообщества
+plan.json
+# что и куда уже залито
+processed.json
+processed.json.bak*
+*.log
+
+# --- Рабочие каталоги ---
+downloads/
+ingest/
+venv/
+.venv/
+running.lock
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# --- Редакторы / ОС ---
+.vscode/
+.idea/
+.claude/
+.DS_Store
+Thumbs.db
