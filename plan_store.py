@@ -6,12 +6,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger("vk2yt.plan")
 
 
 def load_plan(path: Path) -> dict[str, Any] | None:
@@ -39,12 +42,25 @@ def build_or_update_plan(
     daily_limit: int,
     vk_items: list[dict[str, Any]],
     new_first: bool = False,
+    config=None,
 ) -> dict[str, Any]:
     """vk_items уже отсортированы от старых к новым (см. vk_source.fetch_all_videos)."""
     existing = load_plan(path)
     known_ids = {item["vk_id"] for item in existing["items"]} if existing else set()
 
     ordered_existing = existing["items"] if existing else []
+
+    # Освежаем у уже известных роликов поля, приходящие из VK: название и
+    # описание там могли поправить, а wall_post_id мог просто отсутствовать в
+    # плане, собранном более старой версией скрипта.
+    fresh = {i["vk_id"]: i for i in vk_items}
+    for item in ordered_existing:
+        src = fresh.get(item["vk_id"])
+        if not src:
+            continue
+        for key in ("title", "description", "vk_date", "duration", "url", "wall_post_id"):
+            if src.get(key) is not None:
+                item[key] = src[key]
     new_items = [
         {
             "vk_id": item["vk_id"],
@@ -53,6 +69,7 @@ def build_or_update_plan(
             "vk_date": item["vk_date"],
             "duration": item.get("duration"),
             "url": item.get("url"),
+            "wall_post_id": item.get("wall_post_id"),
         }
         for item in vk_items
         if item["vk_id"] not in known_ids
@@ -69,6 +86,9 @@ def build_or_update_plan(
         item["planned_day"] = math.ceil(i / daily_limit)
         items.append(item)
 
+    if config is not None:
+        _fill_wall_texts(items, config)
+
     plan = {
         "built_at": datetime.now(timezone.utc).isoformat(),
         "group_id": group_id,
@@ -78,6 +98,26 @@ def build_or_update_plan(
     }
     save_plan(path, plan)
     return plan
+
+
+def _fill_wall_texts(items: list[dict[str, Any]], config) -> None:
+    """Подтягивает тексты постов для роликов без собственного описания.
+
+    Результат оседает в plan.json, поэтому за стеной ходим один раз на ролик,
+    а не на каждом прогоне. Пустая строка тоже сохраняется — как отметка
+    «пробовали, там ничего нет».
+    """
+    import descriptions
+    import vk_source
+
+    need = [i for i in items if descriptions.needs_wall_text(i)]
+    if not need:
+        return
+
+    logger.info("Тяну тексты постов со стены для %d роликов", len(need))
+    texts = vk_source.fetch_wall_texts(config, [i["wall_post_id"] for i in need])
+    for item in need:
+        item["wall_text"] = texts.get(item["wall_post_id"], "")
 
 
 def summarize(plan: dict[str, Any], registry: dict[str, Any]) -> dict[str, Any]:

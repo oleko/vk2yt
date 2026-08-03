@@ -139,6 +139,22 @@ class RutubeClient:
             raise RutubeError(f"RuTube не вернул video_id: {resp.text[:500]}")
         return str(video_id)
 
+    def update_meta_if_changed(self, video_id: str, title: str, description: str) -> bool:
+        """Обновляет метаданные, только если они реально отличаются."""
+        try:
+            info = self.get_video(video_id)
+        except RutubeError as e:
+            logger.warning("Не удалось прочитать %s перед обновлением: %s", video_id, e)
+            info = {}
+
+        new_title = (title or "")[:TITLE_MAX]
+        new_desc = (description or "")[:DESC_MAX]
+        if info.get("title") == new_title and (info.get("description") or "") == new_desc:
+            return False
+
+        self.patch_video(video_id, title=new_title, description=new_desc)
+        return True
+
     def patch_video(self, video_id: str, **fields) -> None:
         if "title" in fields:
             fields["title"] = (fields["title"] or "")[:TITLE_MAX]

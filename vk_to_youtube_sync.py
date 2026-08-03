@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 import dedup
+import descriptions
 import plan_store
 import registry
 import rutube_target
@@ -71,7 +72,8 @@ def cmd_plan(config: Config) -> int:
     print("Забираю архив VK...")
     items = vk_source.fetch_all_videos(config)
     plan = plan_store.build_or_update_plan(
-        config.plan_path, config.vk_group_id, config.daily_limit, items, config.new_first
+        config.plan_path, config.vk_group_id, config.daily_limit,
+        items, config.new_first, config,
     )
     reg = registry.load_registry(config.registry_path)
     _print_summary(plan_store.summarize(plan, reg))
@@ -149,6 +151,101 @@ def cmd_dry_run(config: Config) -> int:
     return 0
 
 
+def cmd_preview_desc(config: Config, limit: int | None) -> int:
+    """Показать, что получится в названии и описании, ничего не меняя."""
+    plan = plan_store.load_plan(config.plan_path)
+    if plan is None:
+        print("plan.json не найден — сначала выполните --plan")
+        return 1
+
+    items = plan["items"]
+    # берём разные случаи: своё описание / только пост / пусто / заглушка
+    buckets: dict[str, list] = {"описание": [], "пост": [], "пусто": [], "заглушка": []}
+    for i in items:
+        if descriptions.PLACEHOLDER_TITLE.match((i.get("title") or "").strip()):
+            key = "заглушка"
+        elif descriptions.is_meaningful(i.get("description") or "", i.get("title") or ""):
+            key = "описание"
+        elif descriptions.is_meaningful(i.get("wall_text") or "", i.get("title") or ""):
+            key = "пост"
+        else:
+            key = "пусто"
+        if len(buckets[key]) < (limit or 3):
+            buckets[key].append(i)
+
+    for key, group in buckets.items():
+        print(f"\n{'=' * 70}\nИСТОЧНИК: {key}  ({len(group)} примеров)\n{'=' * 70}")
+        for i in group:
+            print(f"\n--- #{i['order']} {i['vk_id']}")
+            print(f"название VK : {i.get('title', '')[:80]!r}")
+            print(f"название -> : {descriptions.pick_title(i, config)[:80]!r}")
+            print("описание ->")
+            for line in descriptions.build_description(i, config).splitlines():
+                print(f"    {line}")
+    return 0
+
+
+def cmd_update_meta(config: Config, limit: int | None, only: str | None) -> int:
+    """Проставить собранные название и описание уже залитым роликам."""
+    plan = plan_store.load_plan(config.plan_path)
+    if plan is None:
+        print("plan.json не найден — сначала выполните --plan")
+        return 1
+
+    reg = registry.load_registry(config.registry_path)
+    by_id = {i["vk_id"]: i for i in plan["items"]}
+    client = _rutube_client(config) if only != "youtube" else None
+
+    limit = limit or config.meta_update_limit
+    units = 0
+    changed_yt = changed_rt = skipped = 0
+
+    for vk_id, entry in reg.items():
+        if changed_yt + changed_rt + skipped >= limit:
+            break
+        item = by_id.get(vk_id)
+        if item is None:
+            continue
+
+        title = descriptions.pick_title(item, config)
+        description = descriptions.build_description(item, config)
+
+        if only != "rutube" and entry.get("youtube", {}).get("state") == "uploaded":
+            vid = entry["youtube"].get("id")
+            if vid:
+                try:
+                    changed, spent = youtube_target.update_video_meta(
+                        config, vid, title, description
+                    )
+                    units += spent
+                    if changed:
+                        changed_yt += 1
+                        logger.info("YouTube обновлён: %s — %s", vid, title[:50])
+                    else:
+                        skipped += 1
+                except Exception as e:  # noqa: BLE001
+                    logger.error("YouTube: не удалось обновить %s: %s", vid, e)
+
+        if client is not None and entry.get("rutube", {}).get("state") == "uploaded":
+            vid = entry["rutube"].get("video_id")
+            if vid:
+                try:
+                    if client.update_meta_if_changed(vid, title, description):
+                        changed_rt += 1
+                        logger.info("RuTube обновлён: %s — %s", vid, title[:50])
+                    else:
+                        skipped += 1
+                except Exception as e:  # noqa: BLE001
+                    logger.error("RuTube: не удалось обновить %s: %s", vid, e)
+
+    registry.save_registry(config.registry_path, reg)
+    print(f"Обновлено на YouTube : {changed_yt}")
+    print(f"Обновлено на RuTube  : {changed_rt}")
+    print(f"Уже совпадало        : {skipped}")
+    print(f"Потрачено юнитов YouTube: {units} из 10 000 суточных")
+    return 0
+
+
 def _reconcile_ingests(config: Config, client, reg: dict) -> None:
     """Проверяет ролики, которые RuTube ещё качает у нас по ссылке."""
     pending = registry.pending_rutube_ingests(reg)
@@ -179,7 +276,10 @@ def _reconcile_ingests(config: Config, client, reg: dict) -> None:
     registry.save_registry(config.registry_path, reg)
 
 
-def _upload_rutube(config: Config, client, entry: dict, item: dict, local_path: Path) -> None:
+def _upload_rutube(
+    config: Config, client, entry: dict, item: dict, local_path: Path,
+    title: str, description: str,
+) -> None:
     size_mb = local_path.stat().st_size / (1024 * 1024)
     if size_mb > config.rutube_max_file_mb:
         registry.mark_rutube_error(
@@ -190,7 +290,7 @@ def _upload_rutube(config: Config, client, entry: dict, item: dict, local_path: 
     ingest_path, public_url = rutube_target.place_in_ingest(config, local_path)
     try:
         video_id = client.upload_by_url(
-            public_url, item["title"], item["description"],
+            public_url, title, description,
             config.rutube_category_id, config.rutube_is_hidden,
         )
     except Exception:
@@ -199,8 +299,8 @@ def _upload_rutube(config: Config, client, entry: dict, item: dict, local_path: 
 
     client.patch_video(
         video_id,
-        title=item["title"],
-        description=item["description"],
+        title=title,
+        description=description,
         category_id=config.rutube_category_id,
         is_hidden=config.rutube_is_hidden,
     )
@@ -223,7 +323,7 @@ def cmd_run(config: Config, limit: int | None, only: str | None) -> int:
             items = vk_source.fetch_all_videos(config)
             plan = plan_store.build_or_update_plan(
                 config.plan_path, config.vk_group_id, config.daily_limit,
-                items, config.new_first,
+                items, config.new_first, config,
             )
             added = plan["total"] - before
             if added:
@@ -302,7 +402,11 @@ def cmd_run(config: Config, limit: int | None, only: str | None) -> int:
         if not need_yt and not need_rt:
             continue
 
-        logger.info("Обрабатываю %s: %s", vk_id, item["title"])
+        # Название и описание собираются один раз и одинаково едут на обе площадки
+        title = descriptions.pick_title(item, config)
+        description = descriptions.build_description(item, config)
+
+        logger.info("Обрабатываю %s: %s", vk_id, title)
         local_path = None
         try:
             local_path = vk_source.download_video(
@@ -318,7 +422,7 @@ def cmd_run(config: Config, limit: int | None, only: str | None) -> int:
             if need_yt:
                 try:
                     video_id, url = youtube_target.upload_video(
-                        config, local_path, item["title"], item["description"]
+                        config, local_path, title, description
                     )
                     registry.mark_youtube_uploaded(entry, video_id, url)
                     registry.save_registry(config.registry_path, reg)
@@ -334,7 +438,9 @@ def cmd_run(config: Config, limit: int | None, only: str | None) -> int:
 
             if need_rt:
                 try:
-                    _upload_rutube(config, client, entry, item, local_path)
+                    _upload_rutube(
+                        config, client, entry, item, local_path, title, description
+                    )
                     logger.info(
                         "RuTube в обработке: %s -> %s", vk_id, entry["rutube"].get("video_id")
                     )
@@ -364,6 +470,14 @@ def main() -> int:
         help="Сверить план с тем, что уже есть на YouTube и RuTube",
     )
     parser.add_argument("--dry-run", action="store_true", help="Показать порцию без скачивания")
+    parser.add_argument(
+        "--preview-desc", action="store_true",
+        help="Показать, какие получатся названия и описания (ничего не меняет)",
+    )
+    parser.add_argument(
+        "--update-meta", action="store_true",
+        help="Проставить названия и описания уже залитым роликам",
+    )
     parser.add_argument("--limit", type=int, default=None, help="Ограничить число роликов")
     parser.add_argument("--only", choices=["youtube", "rutube"], default=None)
     args = parser.parse_args()
@@ -376,6 +490,10 @@ def main() -> int:
         return cmd_plan(config)
     if args.reconcile:
         return cmd_reconcile(config)
+    if args.preview_desc:
+        return cmd_preview_desc(config, args.limit)
+    if args.update_meta:
+        return cmd_update_meta(config, args.limit, args.only)
     if args.dry_run:
         return cmd_dry_run(config)
     return cmd_run(config, args.limit, args.only)

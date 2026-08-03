@@ -16,6 +16,8 @@ from config import Config
 logger = logging.getLogger("vk2yt.vk_source")
 
 VK_API_URL = "https://api.vk.com/method/video.get"
+VK_WALL_URL = "https://api.vk.com/method/wall.getById"
+WALL_BATCH = 100
 # Несмотря на документацию (максимум 200), video.get реально отдаёт не больше
 # 100 записей за вызов — проверено на живом API.
 PAGE_SIZE = 100
@@ -72,12 +74,58 @@ def fetch_all_videos(config: Config) -> list[dict[str, Any]]:
                 "vk_date": v.get("date"),
                 "duration": v.get("duration"),
                 "url": v.get("share_url") or video_page_url(vk_id),
+                # пост, к которому приложено видео: у большинства роликов своё
+                # описание пустое, и текст поста — единственный источник
+                "wall_post_id": v.get("wall_post_id"),
             })
 
         offset += len(page)
 
     items.sort(key=lambda x: x["vk_date"] or 0)
     return items
+
+
+def fetch_wall_texts(config: Config, post_ids: list[int]) -> dict[int, str]:
+    """Тексты постов со стены сообщества: {wall_post_id: text}.
+
+    wall.getById принимает до 100 постов за вызов, так что весь архив
+    обходится примерно за 15 запросов. Ошибки не фатальны: без текста поста
+    описание просто соберётся из одного шаблона.
+    """
+    owner_id = -abs(config.vk_group_id)
+    texts: dict[int, str] = {}
+
+    for start in range(0, len(post_ids), WALL_BATCH):
+        chunk = post_ids[start:start + WALL_BATCH]
+        params = {
+            "posts": ",".join(f"{owner_id}_{pid}" for pid in chunk),
+            "access_token": config.vk_token,
+            "v": config.vk_api_version,
+        }
+        try:
+            resp = requests.get(VK_WALL_URL, params=params, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+        except requests.RequestException as e:
+            logger.warning("Не удалось прочитать посты со стены: %s", e)
+            continue
+
+        if "error" in data:
+            err = data["error"]
+            logger.warning(
+                "VK API (wall.getById) error %s: %s",
+                err.get("error_code"), err.get("error_msg"),
+            )
+            continue
+
+        response = data.get("response")
+        posts = response.get("items", []) if isinstance(response, dict) else (response or [])
+        for p in posts:
+            pid = p.get("id")
+            if pid is not None:
+                texts[pid] = (p.get("text") or "").strip()
+
+    return texts
 
 
 def check_access(config: Config) -> tuple[bool, str]:

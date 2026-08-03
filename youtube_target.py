@@ -23,6 +23,9 @@ logger = logging.getLogger("vk2yt.youtube")
 SCOPES = [
     "https://www.googleapis.com/auth/youtube.upload",
     "https://www.googleapis.com/auth/youtube.readonly",
+    # нужен, чтобы править название и описание уже залитых роликов
+    # (videos.update); одного youtube.upload для этого не хватает
+    "https://www.googleapis.com/auth/youtube.force-ssl",
 ]
 TITLE_MAX = 100
 DESC_MAX = 5000
@@ -147,6 +150,38 @@ def upload_video(config: Config, file_path: Path, title: str, description: str) 
     video_id = response["id"]
     url = f"https://www.youtube.com/watch?v={video_id}"
     return video_id, url
+
+
+def update_video_meta(
+    config: Config, video_id: str, title: str, description: str
+) -> tuple[bool, int]:
+    """Обновляет название и описание уже залитого ролика.
+
+    Возвращает (было ли изменение, потрачено юнитов). Сначала читаем текущий
+    snippet: videos.update требует categoryId, и без него ролику собьётся
+    категория, а заодно потерялись бы теги. Если менять нечего — запрос не
+    отправляется, чтобы не жечь квоту (обновление стоит 50 юнитов из 10 000).
+    """
+    creds = get_credentials(config)
+    youtube = build("youtube", "v3", credentials=creds)
+
+    resp = youtube.videos().list(part="snippet", id=video_id).execute()
+    units = 1
+    items = resp.get("items", [])
+    if not items:
+        raise RuntimeError(f"Ролик {video_id} не найден на канале")
+
+    snippet = items[0]["snippet"]
+    new_title = _sanitize_title(title)
+    new_desc = _sanitize_description(description)
+
+    if snippet.get("title") == new_title and snippet.get("description") == new_desc:
+        return False, units
+
+    snippet["title"] = new_title
+    snippet["description"] = new_desc
+    youtube.videos().update(part="snippet", body={"id": video_id, "snippet": snippet}).execute()
+    return True, units + 50
 
 
 def check(config: Config) -> tuple[bool, str]:

@@ -62,6 +62,20 @@ class Config:
         default_factory=lambda: _env_bool("AUTO_REFRESH_PLAN", True)
     )
 
+    # Описания
+    desc_channel_name: str | None = field(default_factory=lambda: _env("DESC_CHANNEL_NAME"))
+    desc_hashtags: str | None = field(default_factory=lambda: _env("DESC_HASHTAGS"))
+    desc_template_file: Path = field(
+        default_factory=lambda: BASE_DIR / _env("DESC_TEMPLATE_FILE", "description_template.txt")
+    )
+    # Заменять автозаглушки VK («Video by …», «Live: …») текстом из поста
+    fix_placeholder_titles: bool = field(
+        default_factory=lambda: _env_bool("FIX_PLACEHOLDER_TITLES", True)
+    )
+    # Сколько роликов обновлять за один --update-meta. На YouTube обновление
+    # стоит 51 юнит из 10 000 суточных, поэтому лимит небольшой.
+    meta_update_limit: int = field(default_factory=lambda: _env_int("META_UPDATE_LIMIT", 20))
+
     # Дашборд
     dash_password: str | None = field(default_factory=lambda: _env("DASH_PASSWORD"))
     dash_port: int = field(default_factory=lambda: _env_int("DASH_PORT", 8766))
