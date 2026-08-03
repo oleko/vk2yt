@@ -200,8 +200,11 @@ def cmd_update_meta(config: Config, limit: int | None, only: str | None) -> int:
     units = 0
     changed_yt = changed_rt = skipped = 0
 
+    # Лимит ограничивает именно изменения: уже совпадающие ролики почти
+    # ничего не стоят (1 юнит на чтение) и не должны съедать порцию, иначе
+    # повторный прогон будет топтаться на начале реестра.
     for vk_id, entry in reg.items():
-        if changed_yt + changed_rt + skipped >= limit:
+        if changed_yt + changed_rt >= limit:
             break
         item = by_id.get(vk_id)
         if item is None:
