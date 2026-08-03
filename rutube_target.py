@@ -45,6 +45,10 @@ class RutubeError(RuntimeError):
     pass
 
 
+class RutubeQuotaExceeded(RutubeError):
+    """Суточный лимит загрузок RuTube исчерпан — до завтра пробовать бессмысленно."""
+
+
 class RutubeClient:
     def __init__(self, config: Config):
         self.config = config
@@ -121,6 +125,13 @@ class RutubeClient:
             body["author"] = self.config.rutube_channel_id
         resp = self._request("POST", VIDEO_URL, json=body)
         if not resp.ok:
+            detail = ""
+            try:
+                detail = resp.json().get("detail", "")
+            except ValueError:
+                pass
+            if "загрузок в сутки" in detail:
+                raise RutubeQuotaExceeded(detail)
             raise RutubeError(f"Ошибка заливки RuTube ({resp.status_code}): {resp.text[:500]}")
         data = resp.json()
         video_id = data.get("video_id") or data.get("id")
@@ -204,6 +215,18 @@ def place_in_ingest(config: Config, local_path: Path) -> tuple[Path, str]:
         shutil.copy2(local_path, ingest_path)
     ingest_path.chmod(0o644)
     return ingest_path, f"{config.rutube_public_base_url.rstrip('/')}/{name}"
+
+
+def ingest_size_mb(config: Config) -> float:
+    if not config.rutube_ingest_dir.exists():
+        return 0.0
+    total = sum(f.stat().st_size for f in config.rutube_ingest_dir.iterdir() if f.is_file())
+    return total / (1024 * 1024)
+
+
+def ingest_has_room(config: Config) -> bool:
+    """Не даём ingest/ распухнуть, если RuTube медленно забирает файлы."""
+    return ingest_size_mb(config) < config.rutube_ingest_max_mb
 
 
 def remove_from_ingest(ingest_file: str | None) -> None:

@@ -133,10 +133,19 @@ def index():
         return "<h1>plan.json не найден</h1><p>Выполните: python vk_to_youtube_sync.py --plan</p>"
 
     summary = plan_store.summarize(plan, reg)
-    batch = plan_store.next_batch(
-        plan, reg, config.daily_limit, config.max_retries,
-        config.rutube_enabled, config.rutube_import_grace_h,
+    yt_batch = plan_store.next_batch_youtube(
+        plan, reg, config.daily_limit, config.max_retries
     )
+    rt_batch = []
+    if config.rutube_enabled:
+        rt_batch = plan_store.next_batch_rutube(
+            plan, reg, config.rutube_daily_limit, config.max_retries,
+            config.rutube_import_grace_h, config.rutube_import_enabled,
+        )
+    seen: dict = {}
+    for item in yt_batch + rt_batch:
+        seen.setdefault(item["vk_id"], item)
+    batch = sorted(seen.values(), key=lambda i: i.get("order", 0))
 
     recent_ids = [
         vk_id for vk_id, e in reg.items()

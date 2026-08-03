@@ -75,6 +75,9 @@ class Config:
     rutube_enabled: bool = field(default_factory=lambda: _env_bool("RUTUBE_ENABLED", True))
     rutube_login: str | None = field(default_factory=lambda: _env("RUTUBE_LOGIN"))
     rutube_password: str | None = field(default_factory=lambda: _env("RUTUBE_PASSWORD"))
+    # Готовый токен из браузера. Нужен, когда вход в аккаунт только по SMS и
+    # пароля нет: token_auth в этом случае неприменим.
+    rutube_token: str | None = field(default_factory=lambda: _env("RUTUBE_TOKEN"))
     rutube_category_id: int = field(default_factory=lambda: _env_int("RUTUBE_CATEGORY_ID", 8))
     # id канала: аккаунт редакторский, роликами владеет канал, а не залогиненный
     # пользователь — по этому id берётся инвентарь и к нему привязывается заливка
@@ -94,6 +97,19 @@ class Config:
     rutube_import_grace_h: float = field(
         default_factory=lambda: _env_float("RUTUBE_IMPORT_GRACE_H", 72.0)
     )
+    # У RuTube свой суточный лимит загрузок — на практике 20 роликов
+    # («Превышено количество загрузок в сутки»). Это больше, чем 6 у YouTube,
+    # поэтому темп задаётся отдельно.
+    rutube_daily_limit: int = field(default_factory=lambda: _env_int("RUTUBE_DAILY_LIMIT", 20))
+    # Включён ли встроенный импорт RuTube с YouTube-канала. Если да, прямая
+    # заливка не должна обгонять YouTube: иначе импортёр позже утянет тот же
+    # ролик с YouTube и на RuTube получится дубль.
+    rutube_import_enabled: bool = field(
+        default_factory=lambda: _env_bool("RUTUBE_IMPORT_ENABLED", True)
+    )
+    # Потолок на суммарный размер ingest/ — страховка от распухания диска,
+    # когда RuTube медленно забирает файлы большой пачки.
+    rutube_ingest_max_mb: int = field(default_factory=lambda: _env_int("RUTUBE_INGEST_MAX_MB", 4000))
     rutube_is_hidden: bool = field(default_factory=lambda: _env_bool("RUTUBE_IS_HIDDEN", False))
     rutube_max_file_mb: int = field(default_factory=lambda: _env_int("RUTUBE_MAX_FILE_MB", 2000))
     rutube_token_path: Path = field(default_factory=lambda: BASE_DIR / "rutube_token.json")
@@ -116,10 +132,10 @@ class Config:
 
     def require_rutube(self) -> None:
         missing = []
-        if not self.rutube_login:
-            missing.append("RUTUBE_LOGIN")
-        if not self.rutube_password:
-            missing.append("RUTUBE_PASSWORD")
+        # Годится либо готовый токен, либо пара логин/пароль. У аккаунтов,
+        # зарегистрированных по SMS, пароля нет — там только токен.
+        if not self.rutube_token and not (self.rutube_login and self.rutube_password):
+            missing.append("RUTUBE_TOKEN (или пара RUTUBE_LOGIN + RUTUBE_PASSWORD)")
         if not self.rutube_public_base_url:
             missing.append("RUTUBE_PUBLIC_BASE_URL")
         if missing:

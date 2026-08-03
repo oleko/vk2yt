@@ -108,25 +108,44 @@ def cmd_reconcile(config: Config) -> int:
     return 0
 
 
+def _batches(config: Config, plan: dict, reg: dict) -> tuple[list, list]:
+    """Очереди считаются раздельно: у YouTube квота, у RuTube её нет."""
+    yt_batch = plan_store.next_batch_youtube(
+        plan, reg, config.daily_limit, config.max_retries
+    )
+    rt_batch = []
+    if config.rutube_enabled:
+        rt_batch = plan_store.next_batch_rutube(
+            plan, reg, config.rutube_daily_limit, config.max_retries,
+            config.rutube_import_grace_h, config.rutube_import_enabled,
+        )
+    return yt_batch, rt_batch
+
+
 def cmd_dry_run(config: Config) -> int:
     plan = plan_store.load_plan(config.plan_path)
     if plan is None:
         print("plan.json не найден — сначала выполните --plan")
         return 1
     reg = registry.load_registry(config.registry_path)
-    batch = plan_store.next_batch(
-        plan, reg, config.daily_limit, config.max_retries,
-        config.rutube_enabled, config.rutube_import_grace_h,
-    )
-    print(f"Сегодня будет обработано {len(batch)} роликов:")
-    for item in batch:
-        entry = registry.get_entry(reg, item["vk_id"])
-        need_yt = registry.needs_youtube(entry, config.max_retries)
-        need_rt = config.rutube_enabled and registry.needs_rutube_upload(
-            entry, config.max_retries, config.rutube_import_grace_h
-        )
-        targets = ",".join(t for t, need in (("YT", need_yt), ("RT", need_rt)) if need)
-        print(f"  #{item['order']:<5} [{targets:<5}] {item['vk_id']}  {item['title'][:60]}")
+    yt_batch, rt_batch = _batches(config, plan, reg)
+
+    rt_ids = {i["vk_id"] for i in rt_batch}
+    print(f"YouTube: {len(yt_batch)} роликов (лимит {config.daily_limit}, квота API)")
+    for item in yt_batch:
+        both = " +RT" if item["vk_id"] in rt_ids else ""
+        print(f"  #{item['order']:<5} {item['title'][:60]}{both}")
+
+    only_rt = [i for i in rt_batch if i["vk_id"] not in {x["vk_id"] for x in yt_batch}]
+    print(f"\nRuTube: {len(rt_batch)} роликов (лимит {config.rutube_daily_limit}), "
+          f"из них только на RuTube: {len(only_rt)}")
+    for item in only_rt[:15]:
+        print(f"  #{item['order']:<5} {item['title'][:60]}")
+    if len(only_rt) > 15:
+        print(f"  ... и ещё {len(only_rt) - 15}")
+
+    downloads = len({i["vk_id"] for i in yt_batch} | rt_ids)
+    print(f"\nБудет скачано из VK: {downloads} роликов (каждый — один раз)")
     return 0
 
 
@@ -222,10 +241,17 @@ def cmd_run(config: Config, limit: int | None, only: str | None) -> int:
         }
         rutube_target.gc_ingest(config, known)
 
-    batch = plan_store.next_batch(
-        plan, reg, config.daily_limit, config.max_retries,
-        config.rutube_enabled, config.rutube_import_grace_h,
-    )
+    yt_batch, rt_batch = _batches(config, plan, reg)
+    if only == "youtube":
+        rt_batch = []
+    if only == "rutube":
+        yt_batch = []
+
+    # Объединяем в порядке плана: ролик, нужный обеим площадкам, скачивается один раз
+    order = {}
+    for item in yt_batch + rt_batch:
+        order.setdefault(item["vk_id"], item)
+    batch = sorted(order.values(), key=lambda i: i.get("order", 0))
     if limit:
         batch = batch[:limit]
 
@@ -233,20 +259,26 @@ def cmd_run(config: Config, limit: int | None, only: str | None) -> int:
         logger.info("Нечего обрабатывать сегодня")
         return 0
 
-    logger.info("В обработке %d роликов", len(batch))
+    yt_ids = {i["vk_id"] for i in yt_batch}
+    rt_ids = {i["vk_id"] for i in rt_batch}
+    logger.info(
+        "В обработке %d роликов (YouTube: %d, RuTube: %d)",
+        len(batch), len(yt_ids & {i["vk_id"] for i in batch}),
+        len(rt_ids & {i["vk_id"] for i in batch}),
+    )
 
     for item in batch:
         vk_id = item["vk_id"]
         entry = registry.get_entry(reg, vk_id, item["title"], item["vk_date"])
 
-        need_yt = only != "rutube" and registry.needs_youtube(entry, config.max_retries)
-        need_rt = (
-            only != "youtube"
-            and client is not None
-            and registry.needs_rutube_upload(
-                entry, config.max_retries, config.rutube_import_grace_h
+        need_yt = vk_id in yt_ids
+        need_rt = client is not None and vk_id in rt_ids
+        if need_rt and not rutube_target.ingest_has_room(config):
+            logger.warning(
+                "ingest/ упёрся в лимит %d МБ — RuTube для %s отложен до следующего прогона",
+                config.rutube_ingest_max_mb, vk_id,
             )
-        )
+            need_rt = False
         if not need_yt and not need_rt:
             continue
 
@@ -286,6 +318,12 @@ def cmd_run(config: Config, limit: int | None, only: str | None) -> int:
                     logger.info(
                         "RuTube в обработке: %s -> %s", vk_id, entry["rutube"].get("video_id")
                     )
+                except rutube_target.RutubeQuotaExceeded as e:
+                    # Не наша ошибка и не ошибка ролика: до завтра RuTube всё
+                    # равно откажет, поэтому ничего не помечаем и не тратим
+                    # попытки — просто перестаём его дёргать в этом прогоне.
+                    logger.warning("Суточный лимит загрузок RuTube исчерпан (%s)", e)
+                    rt_ids.clear()
                 except Exception as e:  # noqa: BLE001
                     registry.mark_rutube_error(entry, str(e))
                     logger.error("RuTube ошибка для %s: %s", vk_id, e)

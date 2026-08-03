@@ -138,8 +138,11 @@ def reconcile(
         # реально что-то произошло, иначе он распухнет на весь архив.
         yt_new = yt_hit and (existing or {}).get("youtube", {}).get("state") != "uploaded"
         rt_new = rt_hit and (existing or {}).get("rutube", {}).get("state") != "uploaded"
+        # «Ждёт импорта» имеет смысл, только если встроенный импорт RuTube
+        # действительно включён — иначе ждать нечего и ролик просто в очереди.
         waiting = (
-            not rt_hit
+            config.rutube_import_enabled
+            and not rt_hit
             and existing is not None
             and registry.is_waiting_import(existing, config.rutube_import_grace_h)
         )

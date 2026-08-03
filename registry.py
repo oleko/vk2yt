@@ -111,11 +111,22 @@ def needs_youtube(entry: dict[str, Any], max_retries: int) -> bool:
     return True
 
 
-def needs_rutube_upload(entry: dict[str, Any], max_retries: int, import_grace_h: float) -> bool:
+def needs_rutube_upload(
+    entry: dict[str, Any],
+    max_retries: int,
+    import_grace_h: float,
+    import_enabled: bool = True,
+) -> bool:
     """Нужна ли прямая заливка на RuTube.
 
-    Заливаем сами только то, что их встроенный импорт с YouTube явно пропустил:
-    ролик уже на YouTube дольше grace-периода, а на RuTube так и не появился.
+    При включённом встроенном импорте RuTube с YouTube прямая заливка работает
+    только как дозаливка пропущенного и НЕ должна обгонять YouTube: иначе мы
+    зальём ролик напрямую, следом он уедет на YouTube, импортёр утянет его
+    оттуда — и на RuTube получится дубль. Поэтому заливаем сами только то, что
+    уже лежит на YouTube дольше grace-периода и импортом так и не подхвачено.
+
+    Если импорт выключен (RUTUBE_IMPORT_ENABLED=0), ждать нечего и незачем —
+    льём сразу, не оглядываясь на YouTube.
     """
     state = entry.get("rutube", {}).get("state", "pending")
     if state in TERMINAL_OK or state == "ingesting":
@@ -123,10 +134,14 @@ def needs_rutube_upload(entry: dict[str, Any], max_retries: int, import_grace_h:
     if state == "error" and entry.get("attempts", 0) >= max_retries:
         return False
 
+    if not import_enabled:
+        return True
+
     yt = entry.get("youtube", {})
     if yt.get("state") != "uploaded":
-        # Ролика ещё нет на YouTube — импортировать нечего, зальём в этом же прогоне.
-        return True
+        # Ролика ещё нет на YouTube — пусть сначала уедет туда, импортёр получит
+        # свой шанс. Обгонять нельзя, иначе будет дубль.
+        return False
 
     age_h = hours_since(yt.get("at"))
     if age_h is None:
@@ -143,16 +158,6 @@ def is_waiting_import(entry: dict[str, Any], import_grace_h: float) -> bool:
         return False
     age_h = hours_since(yt.get("at"))
     return age_h is not None and age_h < import_grace_h
-
-
-def needs_any_processing(
-    entry: dict[str, Any], max_retries: int, rutube_enabled: bool, import_grace_h: float
-) -> bool:
-    if needs_youtube(entry, max_retries):
-        return True
-    if rutube_enabled and needs_rutube_upload(entry, max_retries, import_grace_h):
-        return True
-    return False
 
 
 def mark_youtube_uploaded(

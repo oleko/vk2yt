@@ -109,20 +109,40 @@ def summarize(plan: dict[str, Any], registry: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def next_batch(
+def next_batch_youtube(
     plan: dict[str, Any],
     registry_data: dict[str, Any],
     daily_limit: int,
     max_retries: int,
-    rutube_enabled: bool = True,
-    import_grace_h: float = 72.0,
 ) -> list[dict[str, Any]]:
-    from registry import get_entry, needs_any_processing
+    """Порция на YouTube — упирается в суточную квоту API."""
+    from registry import get_entry, needs_youtube
 
     batch = []
     for item in plan["items"]:
         entry = get_entry(registry_data, item["vk_id"], item["title"], item["vk_date"])
-        if needs_any_processing(entry, max_retries, rutube_enabled, import_grace_h):
+        if needs_youtube(entry, max_retries):
+            batch.append(item)
+        if len(batch) >= daily_limit:
+            break
+    return batch
+
+
+def next_batch_rutube(
+    plan: dict[str, Any],
+    registry_data: dict[str, Any],
+    daily_limit: int,
+    max_retries: int,
+    import_grace_h: float,
+    import_enabled: bool,
+) -> list[dict[str, Any]]:
+    """Порция на RuTube — квоты нет, поэтому лимит свой и обычно выше."""
+    from registry import get_entry, needs_rutube_upload
+
+    batch = []
+    for item in plan["items"]:
+        entry = get_entry(registry_data, item["vk_id"], item["title"], item["vk_date"])
+        if needs_rutube_upload(entry, max_retries, import_grace_h, import_enabled):
             batch.append(item)
         if len(batch) >= daily_limit:
             break
