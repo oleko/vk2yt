@@ -53,7 +53,14 @@ class Config:
     # Очередь
     daily_limit: int = field(default_factory=lambda: _env_int("DAILY_LIMIT", 6))
     max_retries: int = field(default_factory=lambda: _env_int("MAX_RETRIES", 3))
-    new_first: bool = field(default_factory=lambda: _env_bool("NEW_FIRST", False))
+    # Новые ролики сообщества — в начало очереди, чтобы свежее уходило на
+    # площадки сразу, а не ждало, пока разгребётся весь архив.
+    new_first: bool = field(default_factory=lambda: _env_bool("NEW_FIRST", True))
+    # Обновлять план из VK на каждом прогоне: без этого новые ролики сообщества
+    # не попадут в очередь и пайплайн встанет, когда архив закончится.
+    auto_refresh_plan: bool = field(
+        default_factory=lambda: _env_bool("AUTO_REFRESH_PLAN", True)
+    )
 
     # Дашборд
     dash_password: str | None = field(default_factory=lambda: _env("DASH_PASSWORD"))

@@ -214,6 +214,26 @@ def cmd_run(config: Config, limit: int | None, only: str | None) -> int:
     config.ensure_dirs()
 
     plan = plan_store.load_plan(config.plan_path)
+
+    # Свежий срез сообщества: подхватываем ролики, появившиеся со вчера. Иначе
+    # пайплайн встанет, как только закончится архив.
+    if config.auto_refresh_plan or plan is None:
+        before = plan["total"] if plan else 0
+        try:
+            items = vk_source.fetch_all_videos(config)
+            plan = plan_store.build_or_update_plan(
+                config.plan_path, config.vk_group_id, config.daily_limit,
+                items, config.new_first,
+            )
+            added = plan["total"] - before
+            if added:
+                where = "в начало очереди" if config.new_first else "в конец очереди"
+                logger.info("В сообществе новых роликов: %d — добавлены %s", added, where)
+        except Exception as e:  # noqa: BLE001
+            logger.error("Не удалось обновить план из VK: %s", e)
+            if plan is None:
+                return 1
+
     if plan is None:
         print("plan.json не найден — сначала выполните --plan")
         return 1
