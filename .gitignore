@@ -27,6 +27,7 @@ ingest/
 venv/
 .venv/
 running.lock
+backups/
 
 # --- Python ---
 __pycache__/
