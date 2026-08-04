@@ -23,6 +23,24 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 config = load_config()
 app.secret_key = config.dash_password or "vk2yt-dev-secret"
 
+QUEUE_PAGE_SIZE = 10
+
+
+def _paginate(items: list, page_param: str) -> tuple[list, int, int, int]:
+    """Режет список на страницы по параметру из query string (?<page_param>=N).
+
+    Возвращает (роликов на странице, номер страницы, всего страниц, всего роликов).
+    """
+    total = len(items)
+    total_pages = max(1, (total + QUEUE_PAGE_SIZE - 1) // QUEUE_PAGE_SIZE)
+    try:
+        page = int(request.args.get(page_param, 1))
+    except ValueError:
+        page = 1
+    page = min(max(page, 1), total_pages)
+    start = (page - 1) * QUEUE_PAGE_SIZE
+    return items[start:start + QUEUE_PAGE_SIZE], page, total_pages, total
+
 
 def requires_auth(f):
     @wraps(f)
@@ -50,9 +68,41 @@ def _tail_log(n: int = 200) -> str:
     return "\n".join(lines[-n:])
 
 
-def _render(summary: dict, batch: list[dict], recent: list[dict], log_tail: str, yt_status: str) -> str:
+def _render(
+    summary: dict,
+    yt_queue: tuple[list, int, int, int],
+    rt_queue: tuple[list, int, int, int],
+    recent: list[dict],
+    log_tail: str,
+    yt_status: str,
+) -> str:
     def esc(s):
         return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    def pager(page_param: str, page: int, total_pages: int) -> str:
+        if total_pages <= 1:
+            return ""
+        other = "rt_page" if page_param == "yt_page" else "yt_page"
+        other_val = request.args.get(other)
+        other_qs = f"&{other}={other_val}" if other_val else ""
+        links = []
+        for p in range(1, total_pages + 1):
+            if p == page:
+                links.append(f"<b>{p}</b>")
+            else:
+                links.append(f'<a href="/?{page_param}={p}{other_qs}">{p}</a>')
+        return f'<div class="pager">Стр.: {" ".join(links)}</div>'
+
+    def queue_section(title: str, page_param: str, queue: tuple[list, int, int, int]) -> str:
+        items, page, total_pages, total = queue
+        rows = "".join(f"<li>#{i.get('order', '?')} {esc(i['title'])}</li>" for i in items)
+        return f"""
+        <div class="queue-col">
+          <h3>{title} <span class="count">(всего {total})</span></h3>
+          <ul>{rows or '<li style="list-style:none">(пусто)</li>'}</ul>
+          {pager(page_param, page, total_pages)}
+        </div>
+        """
 
     def cell(target: dict) -> str:
         state = target.get("state", "-")
@@ -76,8 +126,6 @@ def _render(summary: dict, batch: list[dict], recent: list[dict], log_tail: str,
             f"<td>{cell(r.get('rutube', {}))}</td></tr>"
         )
 
-    batch_rows = "".join(f"<li>{esc(b['title'])}</li>" for b in batch)
-
     return f"""
     <html><head><meta charset="utf-8"><title>VK2YT</title>
     <style>
@@ -87,6 +135,15 @@ def _render(summary: dict, batch: list[dict], recent: list[dict], log_tail: str,
       pre {{ background: #111; color: #ddd; padding: 1em; overflow-x: auto; max-height: 400px; }}
       .stats span {{ margin-right: 1.5em; }}
       button {{ padding: 8px 16px; }}
+      .queues {{ display: flex; gap: 2em; flex-wrap: wrap; }}
+      .queue-col {{ flex: 1; min-width: 280px; }}
+      .queue-col h3 {{ margin-bottom: 0.3em; }}
+      .queue-col .count {{ font-weight: normal; color: #666; font-size: 0.85em; }}
+      .queue-col ol {{ padding-left: 1.5em; margin-top: 0.3em; }}
+      .queue-col li {{ margin-bottom: 0.2em; }}
+      .pager {{ margin-top: 0.5em; }}
+      .pager a {{ margin-right: 0.5em; }}
+      .pager b {{ margin-right: 0.5em; }}
     </style></head>
     <body>
       <h1>VK &rarr; YouTube + RuTube</h1>
@@ -109,7 +166,10 @@ def _render(summary: dict, batch: list[dict], recent: list[dict], log_tail: str,
       <p><a href="/oauth2start">Авторизовать / переавторизовать YouTube</a></p>
 
       <h2>Сегодняшняя порция</h2>
-      <ul>{batch_rows or '<li>(пусто)</li>'}</ul>
+      <div class="queues">
+        {queue_section("YouTube", "yt_page", yt_queue)}
+        {queue_section("RuTube", "rt_page", rt_queue)}
+      </div>
 
       <h2>Последние обработанные</h2>
       <table>
@@ -142,10 +202,8 @@ def index():
             plan, reg, config.rutube_daily_limit, config.max_retries,
             config.rutube_import_grace_h, config.rutube_import_enabled,
         )
-    seen: dict = {}
-    for item in yt_batch + rt_batch:
-        seen.setdefault(item["vk_id"], item)
-    batch = sorted(seen.values(), key=lambda i: i.get("order", 0))
+    yt_queue = _paginate(yt_batch, "yt_page")
+    rt_queue = _paginate(rt_batch, "rt_page")
 
     recent_ids = [
         vk_id for vk_id, e in reg.items()
@@ -156,7 +214,7 @@ def index():
 
     _, yt_status = youtube_target.check(config)
 
-    return _render(summary, batch, recent, _tail_log(), yt_status)
+    return _render(summary, yt_queue, rt_queue, recent, _tail_log(), yt_status)
 
 
 @app.route("/run", methods=["POST"])
