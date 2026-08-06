@@ -36,9 +36,7 @@ MONTHS = (
 
 DEFAULT_TEMPLATE = """{text}
 
-Из архива сообщества «{channel}».
-Опубликовано в сообществе: {date}
-Оригинал: {vk_url}
+Из сообщества «{channel}».
 
 {hashtags}"""
 
