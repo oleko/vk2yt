@@ -416,7 +416,9 @@ def cmd_run(config: Config, limit: int | None, only: str | None) -> int:
                 vk_id, config.downloads_dir, config.vk_cookies_file, item.get("url")
             )
         except Exception as e:  # noqa: BLE001
-            registry.mark_youtube_error(entry, f"Скачивание не удалось: {e}")
+            registry.mark_download_error(
+                entry, f"Скачивание не удалось: {e}", need_yt, need_rt
+            )
             registry.save_registry(config.registry_path, reg)
             logger.error("Скачивание %s не удалось: %s", vk_id, e)
             continue

@@ -209,6 +209,32 @@ def mark_rutube_error(entry: dict[str, Any], message: str) -> None:
     entry["attempts"] = entry.get("attempts", 0) + 1
 
 
+def mark_download_error(
+    entry: dict[str, Any], message: str, need_youtube: bool, need_rutube: bool
+) -> None:
+    """Файл не удалось скачать из VK — до заливки на площадки дело не дошло.
+
+    Помечаем ошибкой только те площадки, ради которых ролик реально скачивался.
+    Если пометить только youtube (как раньше), а ролику на самом деле был нужен
+    только rutube, его rutube-состояние навсегда останется "pending" — оно
+    никогда не станет терминальным, и needs_rutube_upload() будет выбирать этот
+    заведомо неworking ролик в очередь каждый день. Попытка тратится один раз,
+    даже если ролик был нужен обеим площадкам сразу.
+    """
+    at = _now()
+    if need_youtube:
+        entry["youtube"] = {"state": "error", "error": message, "at": at}
+    if need_rutube:
+        entry["rutube"] = {
+            "state": "error",
+            "video_id": entry.get("rutube", {}).get("video_id"),
+            "error": message,
+            "ingest_file": None,
+            "at": at,
+        }
+    entry["attempts"] = entry.get("attempts", 0) + 1
+
+
 def mark_rutube_waiting_import(entry: dict[str, Any]) -> None:
     if entry.get("rutube", {}).get("state") in (*TERMINAL_OK, "ingesting"):
         return
