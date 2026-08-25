@@ -12,6 +12,7 @@ from pathlib import Path
 
 import dedup
 import descriptions
+import notify
 import plan_store
 import registry
 import rutube_target
@@ -312,7 +313,51 @@ def _upload_rutube(
     )
 
 
+def _format_report(report: dict) -> str:
+    lines = []
+    if report["new_from_vk"]:
+        lines.append(f"Новых роликов из VK: {report['new_from_vk']}")
+
+    yt = f"YouTube: +{report['yt_uploaded']}"
+    if report["yt_errors"]:
+        yt += f" (ошибок: {report['yt_errors']})"
+    if report["yt_quota"]:
+        yt += " — квота исчерпана"
+    lines.append(yt)
+
+    rt = f"RuTube: +{report['rt_uploaded']}"
+    if report["rt_errors"]:
+        rt += f" (ошибок: {report['rt_errors']})"
+    if report["rt_quota"]:
+        rt += " — суточный лимит исчерпан"
+    lines.append(rt)
+
+    if report["download_errors"]:
+        lines.append(f"Не удалось скачать из VK: {report['download_errors']}")
+
+    ok = not report["yt_errors"] and not report["rt_errors"] and not report["download_errors"]
+    icon = "✅" if ok else "⚠️"
+    return f"{icon} vk2yt\n" + "\n".join(lines)
+
+
 def cmd_run(config: Config, limit: int | None, only: str | None) -> int:
+    report = {
+        "new_from_vk": 0,
+        "yt_uploaded": 0, "yt_errors": 0, "yt_quota": False,
+        "rt_uploaded": 0, "rt_errors": 0, "rt_quota": False,
+        "download_errors": 0,
+    }
+    try:
+        code = _cmd_run(config, limit, only, report)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("Прогон упал с необработанной ошибкой")
+        notify.send(config, f"🔴 vk2yt: прогон упал с ошибкой\n{e}")
+        raise
+    notify.send(config, _format_report(report))
+    return code
+
+
+def _cmd_run(config: Config, limit: int | None, only: str | None, report: dict) -> int:
     config.require_vk()
     config.ensure_dirs()
 
@@ -329,6 +374,7 @@ def cmd_run(config: Config, limit: int | None, only: str | None) -> int:
                 items, config.new_first, config,
             )
             added = plan["total"] - before
+            report["new_from_vk"] = added
             if added:
                 where = "в начало очереди" if config.new_first else "в конец очереди"
                 logger.info("В сообществе новых роликов: %d — добавлены %s", added, where)
@@ -421,6 +467,7 @@ def cmd_run(config: Config, limit: int | None, only: str | None) -> int:
             )
             registry.save_registry(config.registry_path, reg)
             logger.error("Скачивание %s не удалось: %s", vk_id, e)
+            report["download_errors"] += 1
             continue
 
         try:
@@ -432,14 +479,17 @@ def cmd_run(config: Config, limit: int | None, only: str | None) -> int:
                     registry.mark_youtube_uploaded(entry, video_id, url)
                     registry.save_registry(config.registry_path, reg)
                     logger.info("YouTube OK: %s -> %s", vk_id, url)
+                    report["yt_uploaded"] += 1
                 except youtube_target.QuotaExceededError:
                     logger.error("Квота YouTube исчерпана, прерываю прогон")
                     registry.save_registry(config.registry_path, reg)
+                    report["yt_quota"] = True
                     return 0
                 except Exception as e:  # noqa: BLE001
                     registry.mark_youtube_error(entry, str(e))
                     registry.save_registry(config.registry_path, reg)
                     logger.error("YouTube ошибка для %s: %s", vk_id, e)
+                    report["yt_errors"] += 1
 
             if need_rt:
                 try:
@@ -449,15 +499,18 @@ def cmd_run(config: Config, limit: int | None, only: str | None) -> int:
                     logger.info(
                         "RuTube в обработке: %s -> %s", vk_id, entry["rutube"].get("video_id")
                     )
+                    report["rt_uploaded"] += 1
                 except rutube_target.RutubeQuotaExceeded as e:
                     # Не наша ошибка и не ошибка ролика: до завтра RuTube всё
                     # равно откажет, поэтому ничего не помечаем и не тратим
                     # попытки — просто перестаём его дёргать в этом прогоне.
                     logger.warning("Суточный лимит загрузок RuTube исчерпан (%s)", e)
+                    report["rt_quota"] = True
                     rt_ids.clear()
                 except Exception as e:  # noqa: BLE001
                     registry.mark_rutube_error(entry, str(e))
                     logger.error("RuTube ошибка для %s: %s", vk_id, e)
+                    report["rt_errors"] += 1
                 registry.save_registry(config.registry_path, reg)
         finally:
             if local_path and local_path.exists():

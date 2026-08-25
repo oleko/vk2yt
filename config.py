@@ -80,6 +80,11 @@ class Config:
     dash_password: str | None = field(default_factory=lambda: _env("DASH_PASSWORD"))
     dash_port: int = field(default_factory=lambda: _env_int("DASH_PORT", 8766))
 
+    # Уведомления о каждом прогоне в Telegram. Без обоих значений notify.send()
+    # молча ничего не делает.
+    telegram_bot_token: str | None = field(default_factory=lambda: _env("TELEGRAM_BOT_TOKEN"))
+    telegram_chat_id: str | None = field(default_factory=lambda: _env("TELEGRAM_CHAT_ID"))
+
     # YouTube
     youtube_client_secret: Path = field(
         default_factory=lambda: BASE_DIR / _env("YOUTUBE_CLIENT_SECRET", "client_secret.json")
