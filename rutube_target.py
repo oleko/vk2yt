@@ -71,6 +71,20 @@ class RutubeClient:
             return None
 
     def login(self, force: bool = False) -> str:
+        """Возвращает рабочий токен.
+
+        Если задан RUTUBE_TOKEN — используется он напрямую, token_auth вообще
+        не вызывается. Это нужно для аккаунтов, где RuTube при входе требует
+        капчу и подтверждение по почте: token_auth такую проверку пройти не
+        может (не наш баг, это защита самого RuTube), логин/пароль в этом
+        случае бесполезны. Единственный рабочий способ — вручную взять токен
+        из DevTools браузера (вкладка Network, заголовок Authorization любого
+        запроса к rutube.ru/api/ после обычного входа) и положить в .env.
+        """
+        if self.config.rutube_token:
+            self._token = self.config.rutube_token
+            return self._token
+
         if not force:
             cached = self._load_cached_token()
             if cached:
@@ -102,6 +116,14 @@ class RutubeClient:
         headers = {"Authorization": f"Token {self._token}"}
         resp = self._session.request(method, url, headers=headers, timeout=60, **kwargs)
         if resp.status_code == 401:
+            if self.config.rutube_token:
+                raise RutubeError(
+                    "Токен из RUTUBE_TOKEN протух или отозван, обновить его автоматически "
+                    "нельзя (вход в аккаунт требует капчу/подтверждение по почте). "
+                    "Возьмите свежий токен из DevTools браузера (заголовок Authorization "
+                    "любого запроса к rutube.ru/api/ после обычного входа) и обновите "
+                    "RUTUBE_TOKEN в .env."
+                )
             self.login(force=True)
             headers = {"Authorization": f"Token {self._token}"}
             resp = self._session.request(method, url, headers=headers, timeout=60, **kwargs)
