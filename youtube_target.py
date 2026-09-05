@@ -9,6 +9,7 @@ import logging
 import re
 from pathlib import Path
 
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
@@ -37,6 +38,15 @@ class QuotaExceededError(RuntimeError):
 
 class NotAuthorizedError(RuntimeError):
     """Нет валидного token.json — нужно пройти веб-авторизацию через /oauth2start."""
+
+
+class AuthExpiredError(NotAuthorizedError):
+    """Refresh-токен истёк или отозван (invalid_grant) — не проблема ролика.
+
+    Если не отличать это от обычной ошибки, каждый ролик в этом прогоне
+    получает +1 к attempts за чужую проблему и рано или поздно уходит
+    в терминальную ошибку сам по себе, хотя с файлом всё в порядке.
+    """
 
 
 def _sanitize_title(title: str) -> str:
@@ -96,7 +106,13 @@ def get_credentials(config: Config) -> Credentials:
 
     if not creds.valid:
         if creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+            try:
+                creds.refresh(Request())
+            except RefreshError as e:
+                raise AuthExpiredError(
+                    f"Токен YouTube истёк или отозван (invalid_grant) — "
+                    f"авторизуйтесь заново через /oauth2start: {e}"
+                ) from e
             config.youtube_token_path.write_text(creds.to_json(), encoding="utf-8")
         else:
             raise NotAuthorizedError(

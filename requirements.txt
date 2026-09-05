@@ -1,4 +1,10 @@
 yt-dlp
+# Позволяет yt-dlp имитировать TLS-отпечаток настоящего браузера — часть
+# источников (например, Vimeo) блокирует запросы без этого. Версия зажата
+# диапазоном, который поддерживает текущий yt-dlp (проверяется в его коде,
+# yt_dlp/networking/_curlcffi.py) — более новая curl_cffi отклоняется как
+# несовместимая.
+curl_cffi>=0.10,<0.16
 google-api-python-client
 google-auth-httplib2
 google-auth-oauthlib

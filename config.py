@@ -85,6 +85,14 @@ class Config:
     telegram_bot_token: str | None = field(default_factory=lambda: _env("TELEGRAM_BOT_TOKEN"))
     telegram_chat_id: str | None = field(default_factory=lambda: _env("TELEGRAM_CHAT_ID"))
 
+    # Уведомления личным сообщением VK — на случай, если Telegram недоступен
+    # с сервера (сетевая блокировка). VK_TOKEN для этого не годится: это
+    # сервисный ключ, а messages.send сервисным токенам недоступен вообще
+    # (VK API error_code 28) — нужен отдельный ключ сообщества с правом
+    # «Сообщения сообщества».
+    vk_notify_token: str | None = field(default_factory=lambda: _env("VK_NOTIFY_TOKEN"))
+    vk_notify_user_id: str | None = field(default_factory=lambda: _env("VK_NOTIFY_USER_ID"))
+
     # YouTube
     youtube_client_secret: Path = field(
         default_factory=lambda: BASE_DIR / _env("YOUTUBE_CLIENT_SECRET", "client_secret.json")

@@ -14,6 +14,7 @@ import dedup
 import descriptions
 import notify
 import plan_store
+import vk_notify
 import registry
 import rutube_target
 import vk_source
@@ -323,6 +324,8 @@ def _format_report(report: dict) -> str:
         yt += f" (ошибок: {report['yt_errors']})"
     if report["yt_quota"]:
         yt += " — квота исчерпана"
+    if report["yt_auth_expired"]:
+        yt += " — АВТОРИЗАЦИЯ ИСТЕКЛА, нужен /oauth2start"
     lines.append(yt)
 
     rt = f"RuTube: +{report['rt_uploaded']}"
@@ -335,15 +338,29 @@ def _format_report(report: dict) -> str:
     if report["download_errors"]:
         lines.append(f"Не удалось скачать из VK: {report['download_errors']}")
 
-    ok = not report["yt_errors"] and not report["rt_errors"] and not report["download_errors"]
+    ok = (
+        not report["yt_errors"] and not report["rt_errors"]
+        and not report["download_errors"] and not report["yt_auth_expired"]
+    )
     icon = "✅" if ok else "⚠️"
     return f"{icon} vk2yt\n" + "\n".join(lines)
+
+
+def _notify_all(config: Config, text: str) -> None:
+    """Оба канала независимы — каждый молча ничего не делает без своих настроек.
+
+    Telegram с VPS у некоторых хостеров может быть заблокирован на уровне
+    сети (см. notify.py), поэтому VK — не просто дублирование, а реальный
+    запасной канал, а не украшение.
+    """
+    notify.send(config, text)
+    vk_notify.send(config, text)
 
 
 def cmd_run(config: Config, limit: int | None, only: str | None) -> int:
     report = {
         "new_from_vk": 0,
-        "yt_uploaded": 0, "yt_errors": 0, "yt_quota": False,
+        "yt_uploaded": 0, "yt_errors": 0, "yt_quota": False, "yt_auth_expired": False,
         "rt_uploaded": 0, "rt_errors": 0, "rt_quota": False,
         "download_errors": 0,
     }
@@ -351,9 +368,9 @@ def cmd_run(config: Config, limit: int | None, only: str | None) -> int:
         code = _cmd_run(config, limit, only, report)
     except Exception as e:  # noqa: BLE001
         logger.exception("Прогон упал с необработанной ошибкой")
-        notify.send(config, f"🔴 vk2yt: прогон упал с ошибкой\n{e}")
+        _notify_all(config, f"🔴 vk2yt: прогон упал с ошибкой\n{e}")
         raise
-    notify.send(config, _format_report(report))
+    _notify_all(config, _format_report(report))
     return code
 
 
@@ -485,6 +502,12 @@ def _cmd_run(config: Config, limit: int | None, only: str | None, report: dict) 
                     registry.save_registry(config.registry_path, reg)
                     report["yt_quota"] = True
                     return 0
+                except youtube_target.AuthExpiredError as e:
+                    # Не проблема ролика — не тратим на неё attempts, просто
+                    # перестаём трогать YouTube до конца этого прогона.
+                    logger.error("Авторизация YouTube истекла: %s", e)
+                    report["yt_auth_expired"] = True
+                    yt_ids.clear()
                 except Exception as e:  # noqa: BLE001
                     registry.mark_youtube_error(entry, str(e))
                     registry.save_registry(config.registry_path, reg)
